@@ -54,6 +54,7 @@ type JsonValue = string | number | boolean | null | JsonObject | JsonValue[]
 type ParsedWhiteboardObject = JsonObject &
   Partial<{
     brushSize: JsonValue
+    boardId: JsonValue
     color: JsonValue
     delta: JsonValue
     endPoint: JsonValue
@@ -217,7 +218,8 @@ function isWhiteboardMessage(
     !isJsonObject(value) ||
     typeof value.id !== "string" ||
     typeof value.senderId !== "string" ||
-    typeof value.type !== "string"
+    typeof value.type !== "string" ||
+    (value.boardId !== undefined && typeof value.boardId !== "string")
   ) {
     return false
   }
@@ -499,6 +501,15 @@ function findPublication(participant: Participant, source: Track.Source) {
   )
 }
 
+function isActiveVideoPublication(publication?: TrackPublication) {
+  return (
+    Boolean(publication) &&
+    !publication?.isMuted &&
+    publication?.track?.kind === Track.Kind.Video &&
+    publication.track.mediaStreamTrack.readyState === "live"
+  )
+}
+
 function parseParticipantMetadata(participant: Participant) {
   const fallbackUser = getUserById(participant.identity)
   const fallbackName = participant.name ?? participant.identity
@@ -576,10 +587,7 @@ function mapParticipant(
       cameraPublication.isMuted ||
       !cameraPublication.track,
     speaking: participant.isSpeaking,
-    isPresenting:
-      Boolean(screenSharePublication) &&
-      !screenSharePublication?.isMuted &&
-      Boolean(screenSharePublication?.track),
+    isPresenting: isActiveVideoPublication(screenSharePublication),
     cameraPublication,
     screenSharePublication,
     audioPublications,
@@ -805,6 +813,7 @@ export function useLiveSession({
     room.on(RoomEvent.ConnectionStateChanged, handleConnectionStateChange)
     room.on(RoomEvent.ParticipantConnected, handleSync)
     room.on(RoomEvent.ParticipantDisconnected, handleSync)
+    room.on(RoomEvent.TrackUnpublished, handleSync)
     room.on(RoomEvent.TrackSubscribed, handleSync)
     room.on(RoomEvent.TrackUnsubscribed, handleSync)
     room.on(RoomEvent.TrackMuted, handleSync)
@@ -863,6 +872,7 @@ export function useLiveSession({
       room.off(RoomEvent.ConnectionStateChanged, handleConnectionStateChange)
       room.off(RoomEvent.ParticipantConnected, handleSync)
       room.off(RoomEvent.ParticipantDisconnected, handleSync)
+      room.off(RoomEvent.TrackUnpublished, handleSync)
       room.off(RoomEvent.TrackSubscribed, handleSync)
       room.off(RoomEvent.TrackUnsubscribed, handleSync)
       room.off(RoomEvent.TrackMuted, handleSync)

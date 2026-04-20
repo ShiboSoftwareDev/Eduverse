@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   LayoutDashboard,
   BookOpen,
@@ -25,10 +25,9 @@ import {
 import { cn } from "@/lib/utils"
 import { useApp } from "@/lib/store"
 import {
-  CLASSES,
-  getClassesByStudent,
-  getClassesByTeacher,
-} from "@/lib/mock-data"
+  loadOrganizationClasses,
+  type OrganizationClass,
+} from "@/lib/supabase/classes"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -75,16 +74,42 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
   const pathname = usePathname()
-  const { currentUser } = useApp()
-  const isStudent = currentUser.role === "student"
+  const { activeOrganization, currentUser } = useApp()
+  const [organizationClasses, setOrganizationClasses] = useState<
+    OrganizationClass[]
+  >([])
   const isTeacher = currentUser.role === "teacher"
   const isAdmin = currentUser.role === "admin"
 
-  const userClasses = isStudent
-    ? getClassesByStudent(currentUser.id)
-    : isTeacher
-      ? getClassesByTeacher(currentUser.id)
-      : CLASSES
+  useEffect(() => {
+    if (!activeOrganization) {
+      setOrganizationClasses([])
+      return
+    }
+
+    let cancelled = false
+
+    loadOrganizationClasses(activeOrganization.id)
+      .then((classes) => {
+        if (!cancelled) setOrganizationClasses(classes)
+      })
+      .catch(() => {
+        if (!cancelled) setOrganizationClasses([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeOrganization?.id])
+
+  const userClasses =
+    activeOrganization && isAdmin
+      ? organizationClasses
+      : organizationClasses.filter((classItem) =>
+          classItem.memberships.some(
+            (membership) => membership.user_id === currentUser.id,
+          ),
+        )
 
   const mainNavItems = isAdmin
     ? NAV_ITEMS_ADMIN
@@ -122,7 +147,10 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
       >
         {/* Logo */}
         <div className="flex items-center h-14 px-3 border-b border-sidebar-border">
-          <Link href="/dashboard" className="flex items-center gap-2 min-w-0">
+          <Link
+            href={activeOrganization ? "/dashboard" : "/organizations"}
+            className="flex items-center gap-2 min-w-0"
+          >
             <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary shrink-0">
               <GraduationCap className="w-4 h-4 text-primary-foreground" />
             </div>
@@ -180,7 +208,7 @@ export function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
                       href={`/classes/${cls.id}/home`}
                       active={isActiveClass}
                       collapsed={collapsed}
-                      colorDot={cls.color}
+                      colorDot={cls.color ?? undefined}
                     />
                     {isActiveClass && !collapsed && (
                       <div className="ml-4 pl-3 border-l border-sidebar-border mt-0.5 space-y-0.5 mb-1">

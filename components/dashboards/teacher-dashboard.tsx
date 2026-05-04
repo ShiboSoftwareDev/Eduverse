@@ -1,12 +1,16 @@
 "use client"
 
 import Link from "next/link"
+import { useEffect, useState } from "react"
 import {
+  BarChart3,
   BookOpen,
-  Calendar,
   FileText,
+  MessageSquare,
   PlusCircle,
+  School,
   TrendingUp,
+  Upload,
   Users,
   Video,
 } from "lucide-react"
@@ -14,33 +18,95 @@ import { StatCard } from "@/components/shared/stat-card"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { getAssignmentsByClass } from "@/lib/mock-data"
+import { Progress } from "@/components/ui/progress"
+import {
+  type ClassAssignment,
+  loadClassAssignments,
+} from "@/features/assignments/use-class-assignments"
 import { getClassesForUser } from "@/lib/education/classes"
-import { getAssignmentProgress } from "@/lib/education/selectors"
+import { TEACHER_PREVIOUS_CLASSES } from "@/lib/mock-data"
 import { useApp } from "@/lib/store"
 import { toLegacyClass } from "@/lib/supabase/classes"
 import { cn } from "@/lib/utils"
 import { CLASS_COLOR_MAP } from "@/lib/view-config"
 
 export function TeacherDashboard() {
-  const { currentUser, organizationClasses } = useApp()
+  const { authUser, currentUser, organizationClasses } = useApp()
   const classRows = getClassesForUser(organizationClasses, currentUser)
+  const classIds = classRows.map((classItem) => classItem.id)
+  const classIdKey = classIds.join("|")
+  const [assignmentsByClass, setAssignmentsByClass] = useState<
+    Record<string, ClassAssignment[]>
+  >({})
+  const [assignmentsError, setAssignmentsError] = useState<string | null>(null)
   const classRowById = new Map(
     classRows.map((classItem) => [classItem.id, classItem]),
   )
   const myClasses = classRows.map(toLegacyClass)
   const totalStudents = new Set(myClasses.flatMap((cls) => cls.studentIds)).size
-  const totalAssignments = myClasses.reduce(
-    (sum, cls) => sum + getAssignmentsByClass(cls.id).length,
+  const totalAssignments = classIds.reduce(
+    (sum, classId) => sum + (assignmentsByClass[classId]?.length ?? 0),
     0,
   )
-  const pendingGrades = myClasses
-    .flatMap((cls) => getAssignmentsByClass(cls.id))
-    .filter((assignment) => assignment.status === "submitted").length
+  const pendingGrades = classIds.reduce(
+    (sum, classId) =>
+      sum +
+      (assignmentsByClass[classId] ?? []).reduce(
+        (assignmentSum, assignment) =>
+          assignmentSum +
+          assignment.submissions.filter((submission) => !submission.gradedAt)
+            .length,
+        0,
+      ),
+    0,
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    const currentUserId = authUser?.id ?? currentUser.id ?? null
+
+    if (classIds.length === 0) {
+      setAssignmentsByClass({})
+      setAssignmentsError(null)
+      return
+    }
+
+    Promise.all(
+      classIds.map(async (classId) => {
+        const assignments = await loadClassAssignments({
+          classId,
+          currentUserId,
+          canManage: true,
+        })
+
+        return [classId, assignments] as const
+      }),
+    )
+      .then((entries) => {
+        if (cancelled) return
+
+        setAssignmentsByClass(Object.fromEntries(entries))
+        setAssignmentsError(null)
+      })
+      .catch((error) => {
+        if (cancelled) return
+
+        setAssignmentsByClass({})
+        setAssignmentsError(
+          error instanceof Error
+            ? error.message
+            : "Could not load assignment metrics.",
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authUser?.id, classIdKey, currentUser.id])
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-foreground text-balance">
             Welcome back, {currentUser.name.split(" ")[0]}
@@ -49,10 +115,12 @@ export function TeacherDashboard() {
             {currentUser.institution} &middot; Spring 2026
           </p>
         </div>
-        <Button size="sm" className="gap-2 shrink-0">
-          <PlusCircle className="w-4 h-4" />
-          New Assignment
-        </Button>
+        <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 dark:border-emerald-800 dark:bg-emerald-900/20">
+          <School className="h-4 w-4 text-emerald-500" />
+          <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+            Teacher
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -85,14 +153,22 @@ export function TeacherDashboard() {
       <div className="grid md:grid-cols-3 gap-6">
         <div className="md:col-span-2 space-y-3">
           <h2 className="font-semibold text-foreground">Your Classes</h2>
+          {assignmentsError ? (
+            <p className="text-xs text-destructive">{assignmentsError}</p>
+          ) : null}
 
           {myClasses.map((cls) => {
             const students = classRowById.get(cls.id)?.students ?? []
-            const assignments = getAssignmentsByClass(cls.id)
-            const submittedAssignments = assignments.filter(
-              (assignment) => assignment.status === "submitted",
-            ).length
-            const { progress } = getAssignmentProgress(assignments)
+            const assignments = assignmentsByClass[cls.id] ?? []
+            const submittedAssignments = assignments.reduce(
+              (sum, assignment) =>
+                sum +
+                assignment.submissions.filter(
+                  (submission) => !submission.gradedAt,
+                ).length,
+              0,
+            )
+            const progress = getTeacherGradingProgress(assignments)
 
             return (
               <Card key={cls.id} className="hover:shadow-md transition-shadow">
@@ -163,22 +239,37 @@ export function TeacherDashboard() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex gap-2 mt-3 pt-3 border-t border-border">
-                    <Link href={`/classes/${cls.id}/home`} className="flex-1">
+                  <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-border">
+                    <Link href={`/classes/${cls.id}/chat`}>
                       <Button
                         variant="outline"
                         size="sm"
                         className="w-full text-xs gap-1.5"
                       >
-                        <BookOpen className="w-3 h-3" /> Class Home
+                        <MessageSquare className="w-3 h-3" /> Chat
                       </Button>
                     </Link>
-                    <Link
-                      href={`/classes/${cls.id}/session`}
-                      className="flex-1"
-                    >
+                    <Link href={`/classes/${cls.id}/session`}>
                       <Button size="sm" className="w-full text-xs gap-1.5">
                         <Video className="w-3 h-3" /> Start Session
+                      </Button>
+                    </Link>
+                    <Link href={`/classes/${cls.id}/assignments`}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full text-xs gap-1.5"
+                      >
+                        <PlusCircle className="w-3 h-3" /> Create Assignment
+                      </Button>
+                    </Link>
+                    <Link href={`/classes/${cls.id}/materials`}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full text-xs gap-1.5"
+                      >
+                        <Upload className="w-3 h-3" /> Upload Material
                       </Button>
                     </Link>
                   </div>
@@ -189,45 +280,6 @@ export function TeacherDashboard() {
         </div>
 
         <div className="space-y-4">
-          <div className="space-y-2">
-            <h2 className="font-semibold text-foreground">Quick Actions</h2>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                {
-                  label: "Start Session",
-                  icon: Video,
-                  href: `/classes/${myClasses[0]?.id}/session`,
-                },
-                {
-                  label: "New Material",
-                  icon: FileText,
-                  href: `/classes/${myClasses[0]?.id}/materials`,
-                },
-                {
-                  label: "Schedule Exam",
-                  icon: Calendar,
-                  href: `/classes/${myClasses[0]?.id}/assignments`,
-                },
-                {
-                  label: "View Chat",
-                  icon: Users,
-                  href: `/classes/${myClasses[0]?.id}/chat`,
-                },
-              ].map((action) => (
-                <Link key={action.label} href={action.href ?? "#"}>
-                  <Card className="hover:shadow-md transition-shadow cursor-pointer group">
-                    <CardContent className="p-3 flex flex-col items-center gap-1.5 text-center">
-                      <action.icon className="w-5 h-5 text-primary" />
-                      <span className="text-xs font-medium text-foreground">
-                        {action.label}
-                      </span>
-                    </CardContent>
-                  </Card>
-                </Link>
-              ))}
-            </div>
-          </div>
-
           <div className="space-y-2">
             <h2 className="font-semibold text-foreground">
               Today&apos;s Schedule
@@ -255,8 +307,89 @@ export function TeacherDashboard() {
           </div>
         </div>
       </div>
+
+      <div className="space-y-3">
+        <h2 className="font-semibold text-foreground">Previous Classes</h2>
+        <div className="grid gap-3">
+          {TEACHER_PREVIOUS_CLASSES.map((classItem) => (
+            <Card key={classItem.id}>
+              <CardContent className="p-4">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
+                        <BarChart3 className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-foreground">
+                          {classItem.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {classItem.code} &middot; {classItem.semester}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:min-w-[420px]">
+                    <div>
+                      <p className="text-[10px] uppercase text-muted-foreground">
+                        Students
+                      </p>
+                      <p className="text-sm font-bold text-foreground">
+                        {classItem.students}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase text-muted-foreground">
+                        Avg Score
+                      </p>
+                      <p className="text-sm font-bold text-foreground">
+                        {classItem.avgScore}%
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase text-muted-foreground">
+                        Graded
+                      </p>
+                      <p className="text-sm font-bold text-foreground">
+                        {classItem.gradedAssignments}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase text-muted-foreground">
+                        Subject
+                      </p>
+                      <p className="truncate text-sm font-bold text-foreground">
+                        {classItem.subject}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center gap-3">
+                  <Progress value={classItem.completion} className="h-1.5" />
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {classItem.completion}%
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
     </div>
   )
+}
+
+function getTeacherGradingProgress(assignments: ClassAssignment[]) {
+  const submissions = assignments.flatMap(
+    (assignment) => assignment.submissions,
+  )
+
+  if (submissions.length === 0) return 0
+
+  const graded = submissions.filter((submission) => submission.gradedAt).length
+
+  return Math.round((graded / submissions.length) * 100)
 }
 
 function getInitials(name: string) {
